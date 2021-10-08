@@ -19,6 +19,7 @@ from . import (
     obj,
     off,
     permas,
+    pflotran,
     ply,
     stl,
     su2,
