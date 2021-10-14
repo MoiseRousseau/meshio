@@ -57,6 +57,7 @@ __all__ = [
     "obj",
     "off",
     "permas",
+    "pflotran",
     "ply",
     "stl",
     "su2",
