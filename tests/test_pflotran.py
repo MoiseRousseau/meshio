@@ -3,6 +3,12 @@ import pathlib
 import numpy as np
 import pytest
 
+#import meshio
+import sys
+import os
+path = os.getcwd() + '/../src/'
+sys.path.insert(0,path)
+print(sys.path)
 import meshio
 
 from . import helpers
@@ -15,14 +21,34 @@ from . import helpers
         helpers.wedge_mesh,
         helpers.pyramid_mesh,
         helpers.hex_mesh,
-        helpers.polyhedron_mesh,
+        #helpers.polyhedron_mesh,
     ],
 )
-def test_pflotran(mesh):
-    def writer(*args, **kwargs):
-        return meshio.pflotran.write(*args, **kwargs)
+def test_io_ascii(mesh):
+    #Test write and read function for consistency
+    helpers.write_read(meshio.pflotran.write, 
+                       meshio.pflotran.read, 
+                       mesh, 
+                       1.0e-12,
+                       extension="ugi")
 
-    helpers.write_read(writer, meshio.pflotran.read, mesh, 1.0e-12)
+
+@pytest.mark.parametrize(
+    "mesh",
+    [
+        helpers.tet_mesh,
+        helpers.wedge_mesh,
+        helpers.pyramid_mesh,
+        helpers.hex_mesh,
+        #helpers.polyhedron_mesh,
+    ],
+)
+def test_io_h5(mesh):
+    helpers.write_read(meshio.pflotran._pflotran.write, 
+                       meshio.pflotran._pflotran.read, 
+                       mesh, 
+                       1.0e-12, 
+                       extension="h5")
 
 
 @pytest.mark.parametrize(
@@ -40,26 +66,37 @@ def test_pflotran(mesh):
             "hexahedron":3}),
     ],
 )
-def test_reference_file(filename, sum_coordinate, ref_num_cells):
+def test_read_reference_file(filename, sum_coordinate, ref_num_cells):
+    #test HDF5 / ASCII read
     this_dir = pathlib.Path(__file__).resolve().parent
     filename = this_dir / "meshes" / "pflotran" / filename
 
     mesh = meshio.read(filename)
     s = np.sum(mesh.points,axis=0)
-    assert abs(s[0] - ref_sum[0]) < 1e-6
-    assert abs(s[1] - ref_sum[1]) < 1e-6
-    assert abs(s[2] - ref_sum[2]) < 1e-6
-    for elem_type, num in ref_num_cells.items:
+    print(mesh.points)
+    assert abs(s[0] - sum_coordinate[0]) < 1e-6
+    assert abs(s[1] - sum_coordinate[1]) < 1e-6
+    assert abs(s[2] - sum_coordinate[2]) < 1e-6
+    for elem_type, num in ref_num_cells.items():
         assert len(mesh.get_cells_type(elem_type)) == num
 
-def test_region():
+
+def test_io_region_h5():
     #TODO
     return
 
-def test_material_ids():
+def test_write_material_ids_h5():
     #TODO
     return
 
-def test_bc():
+def test_bc_h5():
+    #TODO
+    return
+
+def test_io_region_ascii():
+    #TODO
+    return
+
+def test_bc_ascii():
     #TODO
     return
