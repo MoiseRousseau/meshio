@@ -8,7 +8,6 @@ import sys
 import os
 path = os.getcwd() + '/../src/'
 sys.path.insert(0,path)
-print(sys.path)
 import meshio
 
 from . import helpers
@@ -80,23 +79,68 @@ def test_read_reference_file(filename, sum_coordinate, ref_num_cells):
     for elem_type, num in ref_num_cells.items():
         assert len(mesh.get_cells_type(elem_type)) == num
 
-
-def test_io_region_h5():
-    #TODO
+@pytest.mark.parametrize(
+    "filename, cell_set_name, cell_sets, n_bcs",
+    [
+        ("mixed_region.h5",
+             "tetra", #name of the cell sets
+             {"tetra":3}, 
+             {"triangles":12, "quad":15},
+         ),
+    ]
+)
+def test_io_region_h5(filename, cell_set_name, cell_sets, n_bcs):
+    this_dir = pathlib.Path(__file__).resolve().parent
+    filename = this_dir / "meshes" / "pflotran" / filename
+    mesh = meshio.read(filename)
+    print(mesh.cell_sets[cell_set_name])
+    cell_set_to_test = mesh.cell_sets[cell_set_name]
+    for elem_type, n_elem in cell_set_to_test:
+        if elem_type in cell_sets.keys():
+            assert len(n_elem) == cell_sets[elem_type]
+        else:
+            assert len(n_elem) == 0
+    for elem_type, n_elem in n_bcs.items():
+        for x in mesh.cells:
+           if x[0] == elem_type:
+               assert len(x[1]) == n_elem
+    #TODO: output
+    return
+    
+@pytest.mark.parametrize(
+    "meshname, regnames, refmesh",
+    [
+        ("mixed.ugi",
+             ["tetra.vs", "bc.ss"], #name of the cell sets
+             "mixed_region.h5", 
+         ),
+    ]
+)
+def test_io_region_ascii(meshname, regnames, refmesh):
+    #TODO: output
+    this_dir = pathlib.Path(__file__).resolve().parent
+    refmesh = this_dir / "meshes" / "pflotran" / refmesh
+    reference = meshio.read(refmesh)
+    meshname = this_dir / "meshes" / "pflotran" / meshname
+    mesh = meshio.read(meshname)
+    for region in regnames:
+        region = this_dir / "meshes" / "pflotran" / region
+        meshio.pflotran.read_ascii_group(region, mesh)
+    for elem_type, elem in reference.cells:
+        for elem_type2, elem2 in mesh.cells:
+            if elem_type == elem_type2:
+                assert np.all(np.isclose(elem, elem2))
+                break
+    for cell_set_name, cell_set in reference.cell_sets.items():
+        cell_set2 = mesh.cell_sets[cell_set_name]
+        for elem_type, elem in cell_set:
+	          for elem_type2, elem2 in cell_set2:
+	              if elem_type == elem_type2:
+	                  assert np.all(np.isclose(elem, elem2))
+	                  break
     return
 
 def test_write_material_ids_h5():
     #TODO
     return
 
-def test_bc_h5():
-    #TODO
-    return
-
-def test_io_region_ascii():
-    #TODO
-    return
-
-def test_bc_ascii():
-    #TODO
-    return

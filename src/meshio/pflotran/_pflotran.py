@@ -30,44 +30,45 @@ def read_ugi(filename):
     return vert, elem, None, None #no groups, no data
 
 
-def read_ascii_group(filename):
+def read_ascii_group(filename, mesh):
     surf = False
     if str(filename).split('.')[-1] == "ss":
         surf = True
     name = str(filename).split("/")[-1].split(".")[:-1][0]
     if surf: 
-      src = open(filename, 'r')
-      n_face = int(src.readline())
-      grp = np.zeros((n_face,5), dtype='i8')
-      cell_type = {"T":3, "Q":4}
-      for i in range(n_face):
-        line = src.readline().split()
-        grp[i,0] = cell_type[line[0]]
-        grp[i,1:] = [int(x) for x in line[1:]]
-      src.close()
+        src = open(filename, 'r')
+        n_face = int(src.readline())
+        grp = np.zeros((n_face,5), dtype='i8')
+        cell_type = {"T":3, "Q":4}
+        for i in range(n_face):
+          line = src.readline().split()
+          grp[i,0] = cell_type[line[0]]
+          grp[i,1:cell_type[line[0]]+1] = [int(x) for x in line[1:]]
+        src.close()
+        add_bc_to_mesh(name, grp, mesh)
     else:
-      name = grp.split("/")[-1].split(".")[:-1][0]
-      grp = np.genfromtxt(filename, skip_header=1)
+        grp = np.genfromtxt(filename)
+        add_group_to_mesh(name, grp, mesh)
     return grp
 
   
 def read_h5(src):
-  mesh = h5py.File(src, 'r')
-  vert = np.array(mesh["Domain/Vertices"])
-  elem = np.array(mesh["Domain/Cells"])
-  grps = {}
-  data = {}
-  if "Regions" in mesh.keys(): 
-      for reg in list(mesh["Regions"].keys()):
-          if "Vertex Ids" in mesh[f"Regions/{reg}"].keys():
-            grps[reg] = np.array(mesh[f"Regions/{reg}/Vertex Ids"])
-          else:
-            grps[reg] = np.array(mesh[f"Regions/{reg}/Cell Ids"])
-  if "Materials" in mesh.keys(): 
-      data["Materials"] = np.array(mesh[f"Regions/Materials/Material Ids"])
-      #TODO: this suppose this is defined on all the cells numbered for 0 to N-1...
-  mesh.close()
-  return vert, elem, grps, data
+    mesh = h5py.File(src, 'r')
+    vert = np.array(mesh["Domain/Vertices"])
+    elem = np.array(mesh["Domain/Cells"])
+    grps = {}
+    data = {}
+    if "Regions" in mesh.keys(): 
+        for reg in list(mesh["Regions"].keys()):
+            if "Vertex Ids" in mesh[f"Regions/{reg}"].keys():
+              grps[reg] = np.array(mesh[f"Regions/{reg}/Vertex Ids"])
+            else:
+              grps[reg] = np.array(mesh[f"Regions/{reg}/Cell Ids"])
+        if "Materials" in list(mesh["Regions"].keys()): 
+            data["Materials"] = np.array(mesh[f"Regions/Materials/Material Ids"])
+            #TODO: this suppose this is defined on all the cells numbered for 0 to N-1...
+    mesh.close()
+    return vert, elem, grps, data
 
 
 def read(filename):
@@ -90,50 +91,56 @@ def read(filename):
        cells_of_type = elements[cond][:,1:elem_code+1]
        if len(cells_of_type):
            cells.append((elem_type, cells_of_type))
-    if not groups:
-        m = Mesh(
-            points=vertices,
-            cells=cells,
-        )
-        return m
-    #cells set
-    #correspondance for groups
-    index = np.arange(len(elements))
+    #create a cell data to store natural id
+    index = np.arange(len(elements))+1
     indexes = []
     for elem_type, elem_code in elem_type_code.items():
        cond = (elements[:,0] == elem_code)
        cells_of_type = index[cond]
-       if len(cells_of_type):
-           indexes.append((elem_type, cells_of_type))
-    cell_sets = {}
-    for grp_name, grp_cells in groups.items():
-        if len(grp_cells.shape) == 2:
-            continue #boundary connections
-        grp_cell_set = []
-        for (type_name, type_index) in indexes:
-            grp_cell_set.append(
-                (
-                type_name, 
-                np.argwhere(np.isin(type_index, grp_cells)) 
-                )
-            )
-        cell_sets[grp_name] = grp_cell_set
-    #boundary connections
-    for bc_name, bc_conn in groups.items():
-        if len(bc_conn.shape) == 1:
-            continue #already done above
-        tri = bc_conn[bc_conn[0] == 3][:,1:4]
-        quad = bc_conn[bc_conn[0] == 4][:,1:5]
-        cells.append( ("triangle",tri) )
-        cells.append( ("quad",quad) )
+       if np.sum(cond):
+           indexes.append(cells_of_type)
     #build mesh
     m = Mesh(
         points=vertices,
         cells=cells,
-        cell_sets = cell_sets
+        cell_data={"pflotran_indexes":indexes}
     )
+    if groups:
+        cell_sets = {}
+        for grp_name, grp_cells in groups.items():
+            if len(grp_cells.shape) == 2:
+                add_bc_to_mesh(grp_name, grp_cells, m)
+            else:
+                add_group_to_mesh(grp_name, grp_cells, m)
+    #boundary connections
+        for bc_name, bc_conn in groups.items():
+            if len(bc_conn.shape) == 1:
+                continue #already done above
     return m
 
+
+def add_group_to_mesh(grp_name, grp_cells, m):
+    grp_cell_set = []
+    elem_type_code = {"tetra":4, "pyramid":5, "wedge":6, "hexahedron":8}
+    for (type_name, type_index) in zip(elem_type_code.keys(),
+                                       m.cell_data["pflotran_indexes"]):
+        cond = np.isin(type_index, grp_cells)
+        data = np.argwhere(cond)
+        grp_cell_set.append((type_name, data))
+    m.cell_sets[grp_name] = grp_cell_set
+    return
+
+
+def add_bc_to_mesh(bc_name, bc_conn, m):
+    tri = bc_conn[bc_conn[:,0] == 3][:,1:4]
+    quad = bc_conn[bc_conn[:,0] == 4][:,1:5]
+    if len(tri): 
+        m.cells.append( ("triangle",tri) )
+        m.cell_data["pflotran_indexes"].append([-1 for x in tri])
+    if len(quad):
+        m.cells.append( ("quad",quad) )
+        m.cell_data["pflotran_indexes"].append([-1 for x in quad])
+    return
 
 
 def write_h5(filename, mesh):
