@@ -78,8 +78,6 @@ def read(filename):
         vertices, elements, groups, data = read_h5(filename)
     elif ext == "ugi":
         vertices, elements, groups, data = read_ugi(filename)
-    elif ext == "uge":
-        print("Meshio cannot read PFLOTRAN explicit mesh")
     else:
         print("Warning! Unknown PFLOTRAN mesh extension, try ugi")
         vertices, elements, groups, data = read_ugi(filename)
@@ -90,7 +88,7 @@ def read(filename):
        cond = (elements[:,0] == elem_code)
        cells_of_type = elements[cond][:,1:elem_code+1]
        if len(cells_of_type):
-           cells.append((elem_type, cells_of_type))
+           cells.append((elem_type, cells_of_type-1)) #-1 pflotran one based
     #create a cell data to store natural id
     index = np.arange(len(elements))+1
     indexes = []
@@ -112,10 +110,11 @@ def read(filename):
                 add_bc_to_mesh(grp_name, grp_cells, m)
             else:
                 add_group_to_mesh(grp_name, grp_cells, m)
-    #boundary connections
-        for bc_name, bc_conn in groups.items():
-            if len(bc_conn.shape) == 1:
-                continue #already done above
+    for x in m.cells:
+        if x[0] == "triangle":
+            m.cell_data["pflotran_indexes"].append([-1 for i in x[1]])
+        elif x[0] == "quad":
+            m.cell_data["pflotran_indexes"].append([-1 for i in x[1]])
     return m
 
 
@@ -134,12 +133,24 @@ def add_group_to_mesh(grp_name, grp_cells, m):
 def add_bc_to_mesh(bc_name, bc_conn, m):
     tri = bc_conn[bc_conn[:,0] == 3][:,1:4]
     quad = bc_conn[bc_conn[:,0] == 4][:,1:5]
+    added = False
     if len(tri): 
-        m.cells.append( ("triangle",tri) )
-        m.cell_data["pflotran_indexes"].append([-1 for x in tri])
+        for elem_type, elem in m.cells:
+            if elem_type == "triangle":
+                elem += tri
+                added = True
+                break
+        if not added:
+            m.cells.append( ("triangle",tri) )
+    added = False
     if len(quad):
-        m.cells.append( ("quad",quad) )
-        m.cell_data["pflotran_indexes"].append([-1 for x in quad])
+        for elem_type, elem in m.cells:
+            if elem_type == "quad":
+                elem += quad
+                added = True
+                break
+        if not added:
+            m.cells.append( ("quad",tri) )
     return
 
 
@@ -147,28 +158,45 @@ def write_h5(filename, mesh):
     #get elements
     n_cells = 0
     for elem_type,cells in mesh.cells:
-        #TODO write with BC
         if elem_type not in ["triangle", "quad", "tetra", "pyramid", 
                              "wedge", "hexahedron"]:
-            if "polyhedron" in elem_type:
-                write_h5_explicit(filename, mesh)
-                return
             print(f"Element type {elem_type} not supported by PFLOTRAN, stop")
             return
+        if elem_type in ["triangle", "quad"]:
+            continue
         n_cells += len(cells)
     elements = np.zeros((n_cells,9), dtype='i8')
     count = 0
     for elem_type,cells in mesh.cells:
+        if elem_type in ["triangle", "quad"]:
+            continue
         elements[count:len(cells),0] = len(cells[0])
         elements[count:len(cells),1:len(cells[0])+1] = cells
         count += len(cells)
     #write vertices and elements
     out = h5py.File(filename, 'w')
     out.create_dataset("Domain/Vertices", data=mesh.points)
-    out.create_dataset("Domain/Cells", data=elements)
+    out.create_dataset("Domain/Cells", data=elements+1) #pflotran is one based
     #write group
-    for grp_name, grp in mesh.cell_sets: #TODO review
-        out.create_dataset(f"Regions/{grp_name}/Cell Ids", data=elements)
+    for grp_name, grp in mesh.cell_sets:
+        if ("triangle" in grp.keys() or
+            "quad" in grp.keys):
+            continue
+        count = 0
+        grp_indexes = []
+        for elem_type, elem in mesh.cells:
+            if elem_type not in grp.keys():
+                count += len(elem)
+                continue
+            grp_indexes += list(grp[elem_type]+1+count)
+        out.create_dataset(f"Regions/{grp_name}/Cell Ids", data=grp_indexes)
+    #write bc
+    for name, cell_set in mesh.cell_sets:
+        for elem_type, elem in cell_set:
+            bc = np.zeros((len(cell),5), dtype='i8')
+            bc[:,0] = len(elem[0])
+            bc[:,1:] = elem+1
+        out.write(f"Region/{name}/Vertex Ids", dataset=bc)
     out.close()
     return
 
@@ -190,18 +218,48 @@ def write_ugi(filename, mesh):
       for cell in cells:
           out.write(code)
           for index in cell:
-              out.write(f" {index}")
+              out.write(f" {index+1}")
           out.write('\n')
     #write points
     for p in mesh.points:
         out.write(f"{p[0]} {p[1]} {p[2]}\n")
     out.close()
+    #write groups
+    _filename = str(filename)
+    name_ext = _filename.split("/")[-1]
+    folder = _filename[:len(_filename)-len(name_ext)+1]
+    for grp_name, grp in mesh.cell_sets:
+        count = 0
+        grp_indexes = []
+        for elem_type, elem in mesh.cells:
+            if elem_type not in grp.keys():
+                count += len(elem)
+                continue
+            grp_indexes += list(grp[elem_type]+1+count)
+        out = open(folder+name, 'w')
+        for i in grp_indexes:
+            out.write(f'{i}\n')
+        out.close()
+    #write bc
+    for name, cell_set in mesh.cell_sets:
+        for elem_type, elem in cell_set:
+            bc = np.zeros((len(cell),5), dtype='i8')
+            bc[:,0] = len(elem[0])
+            bc[:,1:len(elem[0])+1] = elem+1
+        out = open(folder+name, 'w')
+        for face in bc:
+           if face[0] == 3:
+               out.write("T ")
+               for i in range(3):
+                   out.write(f"{face[i]} ")
+               out.write("\n")
+           elif face[0] == 4:
+               out.write("Q ")
+               for i in range(4):
+                   out.write(f"{face[i]} ")
+               out.write("\n")
+        out.close()
     return
-
-def write_uge(filename, mesh):
-    #TODO
-    return
-
 
 
 
@@ -211,12 +269,10 @@ def write(filename, mesh):
         write_h5(filename, mesh)
     elif ext == "ugi":
         write_ugi(filename, mesh)
-    elif ext == "uge":
-        write_uge(filename, mesh)
     else:
         print("Warning! Unknown PFLOTRAN mesh extension, export as ugi")
         write_ugi(filename, mesh)
     return
 
 
-register("pflotran", [".h5", ".ugi", ".uge"], read, {"pflotran": write})
+register("pflotran", [".h5", ".ugi"], read, {"pflotran": write})
